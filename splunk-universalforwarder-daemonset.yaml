@@ -1,0 +1,160 @@
+---
+# This is a sample configuration files to deploy Splunk Universal Forwarder to Kubernetes. It will ensure every node should have one copy using DaemonSet and also ensure the master node will run it.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: splunkconfig
+  namespace: kube-system
+data:
+  SPLUNK_DEPLOYMENT_SERVER: 192.168.1.0
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: splunksecret
+  namespace: kube-system
+type: Opaque
+data:
+  uf_password: MUZAMmQxZTJlNjdkZg==
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: splunkuniversalforwarder
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  annotations:
+    deprecated.daemonset.template.generation: "1"
+  labels:
+    #addonmanager.kubernetes.io/mode: Reconcile
+    addonmanager.kubernetes.io/mode: EnsureExists    
+    component: splunk-universalforwarder
+    kubernetes.io/cluster-service: "true"
+    tier: node
+  name: splunkuniversalforwarder
+  namespace: kube-system
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      component: splunk-universalforwarder
+      tier: node
+  template:
+    metadata:
+      annotations:
+        agentVersion: 8.2.3
+        schema-versions: v1
+      creationTimestamp: null
+      labels:
+        component: splunk-universalforwarder
+        tier: node
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: kubernetes.azure.com/cluster
+                operator: Exists
+              - key: type
+                operator: NotIn
+                values:
+                - virtual-kubelet
+      containers:
+      - env:
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.hostIP
+        - name: SPLUNK_START_ARGS
+          value:  --accept-license
+        - name: SPLUNK_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: splunksecret
+              key: uf_password
+        - name: SPLUNK_USER
+          value: root
+        - name: SPLUNK_GROUP
+          value: root
+        - name: NO_HEALTHCHECK
+          value: "true"
+        - name: SPLUNK_DEPLOYMENT_SERVER
+          valueFrom:
+            configMapKeyRef:
+              name: splunkconfig
+              key: SPLUNK_DEPLOYMENT_SERVER
+        - name: SPLUNK_BEFORE_START_CMD
+          value: set deploy-poll $(SPLUNK_DEPLOYMENT_SERVER):8089
+        image: splunk/universalforwarder:latest
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          exec:
+            command:
+            - sudo
+            - -u
+            - root
+            - /opt/splunkforwarder/bin/splunk
+            - status
+          failureThreshold: 3
+          initialDelaySeconds: 60
+          periodSeconds: 60
+          successThreshold: 1
+          timeoutSeconds: 15
+        name: splunkuniversalforwarder
+        resources:
+          limits:
+            cpu: 990m
+            memory: 750Mi
+          requests:
+            cpu: 200m
+            memory: 325Mi
+        securityContext:
+          privileged: true
+        terminationMessagePath: /var/log/splunk_termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /var/log
+          name: host-log
+      dnsConfig:
+        options:
+        - name: ndots
+          value: "3"
+      dnsPolicy: ClusterFirst
+      priorityClassName: system-node-critical
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccount: splunkuniversalforwarder
+      serviceAccountName: splunkuniversalforwarder
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      - effect: NoSchedule
+        operator: Exists
+      - effect: PreferNoSchedule
+        operator: Exists
+      volumes:
+      - hostPath:
+          path: /etc/hostname
+          type: ""
+        name: container-hostname
+      - hostPath:
+          path: /var/log
+          type: ""
+        name: host-log
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 50%
+    type: RollingUpdate
